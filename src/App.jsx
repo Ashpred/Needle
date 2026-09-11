@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { beginSpotifyLogin, clearSpotifySession, connectSpotifyPlayer, finishSpotifyLogin, getAccessToken, getSavedTracks, isSpotifyConnected, pauseSpotify, playSpotifyTrack, searchSpotify } from './spotify.js'
 
 const demoTracks = [
   {
@@ -97,6 +98,10 @@ function Artwork({ track, className = '' }) {
 
 export default function App() {
   const [tracks, setTracks] = useState(demoTracks)
+  const [spotifyConnected, setSpotifyConnected] = useState(isSpotifyConnected())
+  const [spotifyBusy, setSpotifyBusy] = useState(false)
+  const [spotifyError, setSpotifyError] = useState('')
+  const [searchBusy, setSearchBusy] = useState(false)
   const [selectedTrack, setSelectedTrack] = useState(demoTracks[0])
   const [isPlaying, setIsPlaying] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
@@ -105,6 +110,113 @@ export default function App() {
   const [dragging, setDragging] = useState(false)
   const [armAngle, setArmAngle] = useState(-8)
   const turntableRef = useRef(null)
+
+  useEffect(() => {
+    let cancelled = false
+    finishSpotifyLogin()
+      .then(async (didFinish) => {
+        if (cancelled) return
+        if (didFinish) setSpotifyConnected(true)
+        const token = await getAccessToken()
+        if (token) {
+          try {
+            await connectSpotifyPlayer((state) => {
+              if (!state) return
+              const current = state.track_window?.current_track
+              if (current) {
+                setSelectedTrack((previous) => ({
+                  ...previous,
+                  id: current.id,
+                  spotifyId: current.id,
+                  name: current.name,
+                  artist: current.artists?.map((artist) => artist.name).join(', ') || previous.artist,
+                  album: current.album?.name || previous.album,
+                  artwork: current.album?.images?.[0]?.url || previous.artwork,
+                  albumUrl: current.album?.external_urls?.spotify || previous.albumUrl,
+                  uri: current.uri,
+                }))
+              }
+            })
+          } catch (error) {
+            console.error(error)
+          }
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) setSpotifyError(error.message)
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  const handleSpotifyLogin = async () => {
+    setSpotifyError('')
+    await beginSpotifyLogin()
+  }
+
+  const loadSpotifyLibrary = async () => {
+    setSpotifyError('')
+    setSearchBusy(true)
+    try {
+      const saved = await getSavedTracks()
+      setTracks(saved.length ? saved : demoTracks)
+    } catch (error) {
+      setSpotifyError(error.message)
+    } finally {
+      setSearchBusy(false)
+    }
+  }
+
+  const handleSearch = async (value) => {
+    setQuery(value)
+    if (!spotifyConnected || !value.trim()) return
+    setSearchBusy(true)
+    setSpotifyError('')
+    try {
+      setTracks(await searchSpotify(value.trim()))
+    } catch (error) {
+      setSpotifyError(error.message)
+    } finally {
+      setSearchBusy(false)
+    }
+  }
+
+  const handleSpotifyPlayback = async (shouldPlay) => {
+    setSpotifyError('')
+    if (!spotifyConnected) {
+      await handleSpotifyLogin()
+      return
+    }
+    setSpotifyBusy(true)
+    try {
+      if (shouldPlay) {
+        await playSpotifyTrack(selectedTrack, (state) => {
+          const current = state?.track_window?.current_track
+          if (!current) return
+          setSelectedTrack((previous) => ({
+            ...previous,
+            id: current.id,
+            spotifyId: current.id,
+            name: current.name,
+            artist: current.artists?.map((artist) => artist.name).join(', ') || previous.artist,
+            album: current.album?.name || previous.album,
+            artwork: current.album?.images?.[0]?.url || previous.artwork,
+            albumUrl: current.album?.external_urls?.spotify || previous.albumUrl,
+            uri: current.uri,
+          }))
+        })
+      } else {
+        await pauseSpotify()
+      }
+      setIsPlaying(shouldPlay)
+      setArmAngle(shouldPlay ? 17 : -8)
+    } catch (error) {
+      setIsPlaying(false)
+      setArmAngle(-8)
+      setSpotifyError(error.message)
+    } finally {
+      setSpotifyBusy(false)
+    }
+  }
 
   const filteredTracks = useMemo(() => {
     const value = query.trim().toLowerCase()
@@ -121,8 +233,7 @@ export default function App() {
   }
 
   const togglePlayback = () => {
-    setIsPlaying((value) => !value)
-    setArmAngle((value) => (value <= -7 ? 17 : -8))
+    handleSpotifyPlayback(!isPlaying)
   }
 
   const updateArmFromPointer = (event) => {
@@ -132,8 +243,7 @@ export default function App() {
     const y = event.clientY - (bounds.top + bounds.height * 0.48)
     const distance = Math.hypot(x, y)
     const onRecord = distance < bounds.width * 0.24
-    setArmAngle(onRecord ? 17 : -8)
-    setIsPlaying(onRecord)
+    if (onRecord !== isPlaying && !spotifyBusy) handleSpotifyPlayback(onRecord)
   }
 
   const handlePointerMove = (event) => {
@@ -238,8 +348,25 @@ export default function App() {
 
             <label className="search-box">
               <span>⌕</span>
-              <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search songs, artists, albums" />
+              <input autoFocus value={query} onChange={(event) => handleSearch(event.target.value)} placeholder={spotifyConnected ? 'Search Spotify' : 'Search songs, artists, albums'} />
             </label>
+
+            {!spotifyConnected ? (
+              <button className="spotify-connect" onClick={handleSpotifyLogin}>
+                <span className="spotify-dot" /> Connect Spotify
+              </button>
+            ) : (
+              <div className="spotify-actions">
+                <button className="spotify-secondary" onClick={loadSpotifyLibrary} disabled={searchBusy}>
+                  {searchBusy ? 'Loading…' : 'Your saved tracks'}
+                </button>
+                <button className="spotify-secondary" onClick={() => { clearSpotifySession(); setSpotifyConnected(false); setTracks(demoTracks); setQuery('') }}>
+                  Disconnect
+                </button>
+              </div>
+            )}
+
+            {spotifyError && <p className="spotify-error">{spotifyError}</p>}
 
             <div className="track-list">
               {filteredTracks.map((track) => (
@@ -257,7 +384,7 @@ export default function App() {
 
             <div className="spotify-note">
               <span className="spotify-dot" />
-              <span>Spotify artwork is shown as supplied and links to its Spotify item. Live search/playback plugs into OAuth PKCE + Web Playback SDK.</span>
+              <span>{spotifyConnected ? 'Connected to Spotify. Select a track, then lower the tonearm to play it.' : 'Connect Spotify to search your library and play tracks through Needle.'}</span>
             </div>
           </div>
         </div>

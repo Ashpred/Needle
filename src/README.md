@@ -52,3 +52,13 @@ Replace `demoTracks` and the demo selection logic with:
 - Tap the arm to toggle playback, or drag it over the record to set the playback state.
 - The previous bottom transport/progress metadata UI has been removed.
 - When no Spotify artwork is available, the record label is intentionally blank rather than showing placeholder text.
+
+## Spotify integration
+
+Needle uses Spotify Authorization Code with PKCE in the browser and the Web Playback SDK. The production callback is:
+
+`https://needlevinyl.vercel.app/callback`
+
+No Spotify Client Secret belongs in this repository or in Vercel's frontend environment. The Client ID is public. The Web Playback SDK requires Spotify Premium, and Spotify's current developer policy includes restrictions on synchronizing Spotify audio with visual media.
+
+The record animation is intentionally set to **5 seconds per rotation** in the current UI build.
